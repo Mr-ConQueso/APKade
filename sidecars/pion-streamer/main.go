@@ -43,11 +43,27 @@ type h264SampleWriter struct {
 
 	sps []byte
 	pps []byte
+
+	currentHasVCL bool
+	readCount     int
+}
+
+func isVCLNALUType(nalType uint8) bool {
+	return nalType == 1 || nalType == 5
+}
+
+func isAccessUnitDelimiterType(nalType uint8) bool {
+	return nalType == 6 || nalType == 7 || nalType == 8 || nalType == 9
 }
 
 func (w *h264SampleWriter) Push(chunk []byte) error {
 	if len(chunk) == 0 {
 		return nil
+	}
+
+	w.readCount += 1
+	if w.readCount <= 10 {
+		log.Printf("h264 chunk #%d bytes=%d", w.readCount, len(chunk))
 	}
 
 	w.buffer = append(w.buffer, chunk...)
@@ -91,14 +107,26 @@ func (w *h264SampleWriter) handleNALU(nalu []byte) error {
 		w.sps = append([]byte(nil), nalu...)
 	case 8:
 		w.pps = append([]byte(nil), nalu...)
-	case 9:
-		if err := w.flushAccessUnit("aud boundary"); err != nil {
+	}
+
+	if isVCLNALUType(nalType) && w.currentHasVCL {
+		if err := w.flushAccessUnit("new vcl boundary"); err != nil {
+			return err
+		}
+	}
+
+	if isAccessUnitDelimiterType(nalType) && w.currentHasVCL {
+		if err := w.flushAccessUnit(fmt.Sprintf("non-vcl boundary type=%d", nalType)); err != nil {
 			return err
 		}
 	}
 
 	w.currentAccessUnit.Write(annexBStartCode)
 	w.currentAccessUnit.Write(nalu)
+
+	if isVCLNALUType(nalType) {
+		w.currentHasVCL = true
+	}
 
 	return nil
 }
@@ -107,16 +135,19 @@ func (w *h264SampleWriter) flushAccessUnit(reason string) error {
 	payload := bytes.TrimSpace(w.currentAccessUnit.Bytes())
 	if len(payload) == 0 {
 		w.currentAccessUnit.Reset()
+		w.currentHasVCL = false
 		return nil
 	}
 
 	nalus, _ := extractAllNALUs(payload)
 	if len(nalus) == 0 {
 		w.currentAccessUnit.Reset()
+		w.currentHasVCL = false
 		return nil
 	}
 
 	hasIDR := false
+	hasVCL := false
 	nalTypes := make([]uint8, 0, len(nalus))
 
 	for _, nalu := range nalus {
@@ -125,9 +156,19 @@ func (w *h264SampleWriter) flushAccessUnit(reason string) error {
 		}
 		nalType := nalu[0] & 0x1F
 		nalTypes = append(nalTypes, nalType)
+
+		if isVCLNALUType(nalType) {
+			hasVCL = true
+		}
 		if nalType == 5 {
 			hasIDR = true
 		}
+	}
+
+	if !hasVCL {
+		w.currentAccessUnit.Reset()
+		w.currentHasVCL = false
+		return nil
 	}
 
 	finalPayload := payload
@@ -163,6 +204,7 @@ func (w *h264SampleWriter) flushAccessUnit(reason string) error {
 	}
 
 	w.currentAccessUnit.Reset()
+	w.currentHasVCL = false
 	return nil
 }
 
@@ -414,6 +456,7 @@ func startFFmpegH264Pipe(filePath string, scrcpyCmd *exec.Cmd) (io.ReadCloser, *
 		"-c:v", "copy",
 		"-bsf:v", "h264_mp4toannexb,h264_metadata=aud=insert",
 		"-f", "h264",
+		"-flush_packets", "1",
 		"pipe:1",
 	)
 
