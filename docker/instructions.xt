@@ -1,0 +1,13 @@
+rsync -avz \
+  build \
+  static \
+  data \
+  package.json \
+  package-lock.json \
+  .env \
+  docker \
+  sidecars \
+  architect@192.168.1.110:/home/architect/apkade/
+
+docker build -t apkade:latest -f docker/Dockerfile .
+docker compose -f docker/docker-compose.yml up -d

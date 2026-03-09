@@ -1,0 +1,9 @@
+node_modules
+.svelte-kit
+.idea
+.vscode
+.git
+build
+docker/data
+data/containers
+data/pool
