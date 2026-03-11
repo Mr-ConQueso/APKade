@@ -1,5 +1,5 @@
 import { json, type RequestHandler } from '@sveltejs/kit';
-import { startAndroidSession } from '$lib/server/android';
+import { startAndroidSession } from '$lib/server/android/android';
 
 export const POST: RequestHandler = async ({ request }) => {
     try {
@@ -21,7 +21,9 @@ export const POST: RequestHandler = async ({ request }) => {
         return json({
             ok: true,
             session: result.session,
-            adb_port: result.adb_port
+            adb_port: result.adb_port,
+            websocket_port: result.websocket_port,
+            websocket_socket_name: result.websocket_socket_name
         });
     } catch (error) {
         const message = error instanceof Error ? error.message : 'Failed to start Android session.';

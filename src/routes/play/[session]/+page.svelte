@@ -1,117 +1,140 @@
 <script lang="ts">
-	import { page } from '$app/stores';
-	import { onDestroy, onMount } from 'svelte';
-	import { goto } from '$app/navigation';
+	import {goto} from '$app/navigation';
+	import {page} from '$app/stores';
+	import {onDestroy, onMount} from 'svelte';
+	import {StreamReceiverScrcpy} from '$lib/client/streaming/streamReceiverScrcpy';
+	import {WebCodecsPlayer} from '$lib/client/streaming/webCodecsPlayer';
+	import {ScrcpyUserControl} from '$lib/client/interaction/scrcpyUserControl';
+	import type {ScrcpyInitialMetadata, SessionStreamRouteResponse} from "$lib/types/stream";
 
-	let status = 'Connecting to session...';
-	let error = '';
 	const sessionId = $page.params.session;
 
-	let video: HTMLVideoElement;
-	let pc: RTCPeerConnection | null = null;
-	let remoteStream: MediaStream | null = null;
+	let canvas: HTMLCanvasElement | undefined;
+	let status = 'Connecting to stream...';
+	let error = '';
+	let metadata: ScrcpyInitialMetadata | null = null;
+
+	let receiver: StreamReceiverScrcpy | null = null;
+	let player: WebCodecsPlayer | null = null;
+	let control: ScrcpyUserControl | null = null;
+
+	async function fetchStreamInfo() {
+		const response = await fetch(`/api/session/${sessionId}/stream`, {
+			method: 'GET',
+			cache: 'no-store'
+		});
+
+		const result = (await response.json()) as SessionStreamRouteResponse;
+
+		if (!response.ok || !result.ok || !result.stream?.ws_url) {
+			throw new Error(result.error ?? 'Failed to resolve stream endpoint.');
+		}
+
+		return result.stream.ws_url;
+	}
+
+	async function startStream() {
+		if (!canvas) {
+			throw new Error('Canvas element was not initialized.');
+		}
+
+		if (!('VideoDecoder' in window)) {
+			throw new Error('This browser does not support WebCodecs VideoDecoder.');
+		}
+
+		const wsUrl = await fetchStreamInfo();
+
+		player = new WebCodecsPlayer({ canvas });
+		receiver = new StreamReceiverScrcpy(wsUrl);
+		control = new ScrcpyUserControl(canvas, receiver, () => metadata);
+
+		receiver.on('connected', () => {
+			status = 'Connected to Android stream...';
+			console.info('[play] websocket connected', { wsUrl });
+		});
+
+		receiver.on('metadata', (nextMetadata) => {
+			metadata = nextMetadata;
+			status = `Streaming ${nextMetadata.deviceName || sessionId}`;
+			console.info('[play] metadata', nextMetadata);
+		});
+
+		receiver.on('video', (data) => {
+			player?.pushFrame(data);
+
+			if (player?.isConfigured()) {
+				status = `Streaming ${metadata?.deviceName || sessionId} · frames=${player.getFrameCount()}`;
+			}
+		});
+
+		receiver.on('videoSettingsSent', (settings) => {
+			console.info('[play] video settings sent', settings.toJSON());
+		});
+
+		receiver.on('deviceMessage', (message) => {
+			console.info('[play] device message', message);
+		});
+
+		receiver.on('error', (streamError) => {
+			console.error('[play] stream receiver error', streamError);
+			error = streamError.message || 'Stream receiver failed.';
+			status = 'Stream error';
+		});
+
+		receiver.on('disconnected', (event) => {
+			console.info('[play] websocket disconnected', {
+				code: event.code,
+				reason: event.reason
+			});
+
+			if (!error) {
+				status = 'Stream disconnected';
+			}
+		});
+
+		receiver.connect();
+	}
 
 	async function leaveGame() {
+		try {
+			await fetch(`/api/session/${sessionId}`, {
+				method: 'DELETE'
+			});
+		} catch (leaveError) {
+			console.error('[play] failed to release session', leaveError);
+		}
+
 		await goto('/');
 	}
 
 	onMount(async () => {
 		try {
 			await startStream();
-			status = `Streaming session: ${sessionId}`;
-		} catch (err) {
-			error = err instanceof Error ? err.message : 'Failed to start stream.';
-			status = 'Stream failed to start';
+		} catch (streamError) {
+			console.error('Stream startup failed', streamError);
+			error =
+				streamError instanceof Error ? streamError.message : 'Failed to start video stream.';
+			status = 'Stream failed';
 		}
 	});
 
-	onDestroy(() => {
-		if (pc) {
-			pc.close();
-			pc = null;
+	onDestroy(async () => {
+		try {
+			control?.destroy();
+		} catch {
+			// best-effort
 		}
+
+		try {
+			await player?.destroy();
+		} catch {
+			// best-effort
+		}
+
+		receiver = null;
+		receiver = null;
+		player = null;
 	});
-
-	async function startStream() {
-		pc = new RTCPeerConnection({
-			iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-		});
-
-		remoteStream = new MediaStream();
-		video.srcObject = remoteStream;
-
-		pc.addTransceiver('video', { direction: 'recvonly' });
-
-		pc.ontrack = async (event) => {
-			console.log('ontrack', {
-				kind: event.track.kind,
-				streamCount: event.streams.length,
-				trackId: event.track.id
-			});
-
-			if (!remoteStream) {
-				remoteStream = new MediaStream();
-				video.srcObject = remoteStream;
-			}
-
-			remoteStream.addTrack(event.track);
-
-			try {
-				await video.play();
-				status = `Streaming session: ${sessionId}`;
-			} catch (playError) {
-				console.error('video.play() failed', playError);
-			}
-		};
-
-		pc.onconnectionstatechange = () => {
-			console.log('connectionState', pc?.connectionState);
-			if (pc?.connectionState === 'failed') {
-				error = 'Peer connection failed.';
-			}
-		};
-
-		pc.oniceconnectionstatechange = () => {
-			console.log('iceConnectionState', pc?.iceConnectionState);
-		};
-
-		pc.onicegatheringstatechange = () => {
-			console.log('iceGatheringState', pc?.iceGatheringState);
-		};
-
-		video.onloadedmetadata = () => {
-			console.log('video metadata loaded', {
-				width: video.videoWidth,
-				height: video.videoHeight
-			});
-		};
-
-		const offer = await pc.createOffer();
-		await pc.setLocalDescription(offer);
-
-		const res = await fetch(`/api/session/${sessionId}/stream`, {
-			method: 'POST',
-			headers: { 'content-type': 'application/json' },
-			body: JSON.stringify({
-				offer: pc.localDescription
-			})
-		});
-
-		const data = await res.json();
-
-		console.log('stream negotiation response', data);
-
-		if (!res.ok || !data.ok) {
-			throw new Error(data?.error ?? 'Failed to negotiate stream.');
-		}
-
-		if (!data.answer) {
-			throw new Error('Streamer did not return an SDP answer.');
-		}
-
-		await pc.setRemoteDescription(data.answer);
-		status = 'Waiting for remote video track...';
-	}
 </script>
 
 <svelte:head>
@@ -125,16 +148,17 @@
 	</div>
 
 	<div class="stream-container">
-		<video bind:this={video} class="android-screen" autoplay playsinline muted></video>
+		<canvas bind:this={canvas} class="android-screen"></canvas>
+
+		{#if metadata}
+			<div class="meta-badge">
+				<span>{metadata.deviceName || 'Android Device'}</span>
+			</div>
+		{/if}
 
 		{#if error}
 			<div class="error-banner">{error}</div>
 		{/if}
-
-		<div class="controls-overlay">
-			<div class="dpad"></div>
-			<div class="action-buttons"></div>
-		</div>
 	</div>
 </div>
 
@@ -166,15 +190,16 @@
 	.back-btn {
 		color: #ef4444;
 		text-decoration: none;
-		font-weight: bold;
+		font-weight: 700;
 		padding: 0.5rem 1rem;
 		border-radius: 0.5rem;
-		background: rgba(239, 68, 68, 0.1);
+		background: rgba(239, 68, 68, 0.12);
 	}
 
 	.status {
 		font-size: 0.9rem;
 		color: #9ca3af;
+		text-align: right;
 	}
 
 	.stream-container {
@@ -183,16 +208,34 @@
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		background: #000;
+		background:
+				radial-gradient(circle at center, rgba(31, 41, 55, 0.5), rgba(0, 0, 0, 0.95)),
+				#000;
+		padding: 1rem;
 	}
 
 	.android-screen {
 		max-width: 100%;
 		max-height: 100%;
 		aspect-ratio: 9 / 16;
-		background: #1f2937;
+		background: #0f172a;
 		object-fit: contain;
-		box-shadow: 0 0 20px rgba(0, 0, 0, 0.5);
+		box-shadow: 0 0 24px rgba(0, 0, 0, 0.6);
+		border-radius: 1rem;
+		outline: none;
+		cursor: pointer;
+	}
+
+	.meta-badge {
+		position: absolute;
+		left: 1rem;
+		bottom: 1rem;
+		padding: 0.5rem 0.75rem;
+		border-radius: 999px;
+		background: rgba(17, 24, 39, 0.8);
+		border: 1px solid rgba(255, 255, 255, 0.08);
+		color: #e5e7eb;
+		font-size: 0.85rem;
 	}
 
 	.error-banner {
@@ -201,19 +244,10 @@
 		left: 1rem;
 		right: 1rem;
 		padding: 0.75rem 1rem;
-		border-radius: 0.5rem;
+		border-radius: 0.75rem;
 		background: #7f1d1d;
 		color: #fff;
 		z-index: 20;
-	}
-
-	.controls-overlay {
-		position: absolute;
-		inset: 0;
-		pointer-events: none;
-		display: flex;
-		justify-content: space-between;
-		align-items: flex-end;
-		padding: 2rem;
+		box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
 	}
 </style>

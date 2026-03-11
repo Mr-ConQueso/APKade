@@ -1,16 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { json, type RequestHandler } from '@sveltejs/kit';
-
-type AndroidSession = {
-	session: string;
-	containerId?: string;
-	containerName: string;
-	adbPort: number;
-	gameId: string;
-	packageName: string;
-	startedAt: string;
-};
+import type { AndroidSession } from '$lib/types/client';
 
 const sessionsDir = path.resolve('data/containers');
 
@@ -23,85 +14,39 @@ function readSession(sessionId: string): AndroidSession | null {
 	}
 }
 
-export const POST: RequestHandler = async ({ params, request, fetch }) => {
-	try {
-		const sessionId = params.session;
-		const session = sessionId ? readSession(sessionId) : null;
+function buildDirectWebSocketUrl(requestUrl: URL, websocketPort: number) {
+	const protocol = requestUrl.protocol === 'https:' ? 'wss:' : 'ws:';
+	return `${protocol}//${requestUrl.hostname}:${websocketPort}`;
+}
 
-		if (!session) {
-			return json(
-				{
-					ok: false,
-					error: 'Session not found.'
-				},
-				{ status: 404 }
-			);
-		}
+export const GET: RequestHandler = async ({ params, url }) => {
+	const sessionId = params.session;
+	const session = sessionId ? readSession(sessionId) : null;
 
-		const body = await request.json();
-		const offer = body?.offer;
-
-		if (!offer) {
-			return json(
-				{
-					ok: false,
-					error: 'WebRTC offer is required.'
-				},
-				{ status: 400 }
-			);
-		}
-
-		const streamerUrl = process.env.STREAMER_URL || "http://localhost:8080";
-
-		if (!streamerUrl) {
-			return json(
-				{
-					ok: false,
-					error: 'STREAMER_URL is not configured.'
-				},
-				{ status: 500 }
-			);
-		}
-
-		const upstream = await fetch(`${streamerUrl}/stream`, {
-			method: 'POST',
-			headers: {
-				'content-type': 'application/json'
-			},
-			body: JSON.stringify({
-				sessionId: session.session,
-				adbPort: session.adbPort,
-				offer
-			})
-		});
-
-		const text = await upstream.text();
-		let result: unknown = null;
-
-		try {
-			result = JSON.parse(text);
-		} catch {
-			return json(
-				{
-					ok: false,
-					error: `Streamer returned non-JSON response: ${text.slice(0, 200)}`
-				},
-				{ status: 502 }
-			);
-		}
-
-		return json(result, {
-			status: upstream.status
-		});
-	} catch (error) {
-		const message = error instanceof Error ? error.message : 'Failed to start stream.';
-
+	if (!session) {
 		return json(
 			{
 				ok: false,
-				error: message
+				error: 'Session not found.'
 			},
-			{ status: 500 }
+			{ status: 404 }
 		);
 	}
+
+	return json({
+		ok: true,
+		session: {
+			session: session.session,
+			adb_port: session.adbPort,
+			websocket_port: session.websocketPort,
+			websocket_socket_name: session.websocketSocketName,
+			game_id: session.gameId,
+			package_name: session.packageName,
+			started_at: session.startedAt
+		},
+		stream: {
+			transport: 'websocket-direct',
+			ws_url: buildDirectWebSocketUrl(url, session.websocketPort)
+		}
+	});
 };

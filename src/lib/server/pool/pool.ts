@@ -2,39 +2,14 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import fs from 'fs';
 import path from 'path';
+import type {PoolConfig, PoolContainer, StoredSession} from "$lib/types/pool";
 
 const execFileAsync = promisify(execFile);
-
-export type PoolConfig = {
-    min: number;
-    max: number;
-    idleTimeoutMs: number;
-    image: string;
-    portStart: number;
-};
-
-export type PoolContainer = {
-    id: string;
-    name: string;
-    adbPort: number;
-    busy: boolean;
-    createdAt: number;
-    lastUsedAt: number;
-};
-
-type StoredSession = {
-    session: string;
-    containerId?: string;
-    containerName: string;
-    adbPort: number;
-    gameId: string;
-    packageName: string;
-    startedAt: string;
-};
 
 const stateDir = path.resolve('data/pool');
 const stateFile = path.join(stateDir, 'pool.json');
 const sessionsDir = path.resolve('data/containers');
+const deviceScrcpyServerJarPath = '/data/local/tmp/apkade-scrcpy-server.jar';
 
 function ensureStateDir() {
     fs.mkdirSync(stateDir, { recursive: true });
@@ -153,6 +128,46 @@ async function stopContainer(name: string) {
     } catch {}
 }
 
+async function removeAdbForward(adbPort: number, forwardPort: number) {
+    const target = `localhost:${adbPort}`;
+
+    try {
+        await run('adb', ['-s', target, 'forward', '--remove', `tcp:${forwardPort}`]);
+    } catch {
+        // best-effort
+    }
+}
+
+async function stopCustomScrcpyServer(
+    container: Pick<PoolContainer, 'id' | 'name' | 'adbPort'>,
+    session: StoredSession | null
+) {
+    const target = `localhost:${container.adbPort}`;
+
+    if (session?.websocketPort !== undefined) {
+        await removeAdbForward(container.adbPort, session.websocketPort);
+    }
+
+    try {
+        await run('adb', ['connect', target]);
+        await run('adb', ['-s', target, 'wait-for-device']);
+    } catch {
+        return;
+    }
+
+    try {
+        await run('adb', ['-s', target, 'shell', 'pkill', '-f', deviceScrcpyServerJarPath]);
+    } catch {
+        // best-effort
+    }
+
+    try {
+        await run('adb', ['-s', target, 'shell', 'rm', '-f', deviceScrcpyServerJarPath]);
+    } catch {
+        // best-effort
+    }
+}
+
 async function resetContainerApps(container: Pick<PoolContainer, 'id' | 'name' | 'adbPort'>) {
     const session = findSessionForContainer(container);
     const target = `localhost:${container.adbPort}`;
@@ -166,6 +181,7 @@ async function resetContainerApps(container: Pick<PoolContainer, 'id' | 'name' |
     }
 
     if (!session?.packageName) {
+        await stopCustomScrcpyServer(container, session);
         return;
     }
 
@@ -174,6 +190,8 @@ async function resetContainerApps(container: Pick<PoolContainer, 'id' | 'name' |
     } catch {
         // best-effort
     }
+
+    await stopCustomScrcpyServer(container, session);
 }
 
 async function listManagedContainerNames() {

@@ -1,0 +1,233 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum AppSource {
+  GOOGLE_PLAY_DATASET
+  FDROID
+  APKMIRROR
+  UPTODOWN
+  APTOIDE
+}
+
+enum ArtifactSource {
+  FDROID
+  APKMIRROR
+  UPTODOWN
+}
+
+enum ArtifactType {
+  APK
+  APKM
+  XAPK
+  SPLIT
+  UNKNOWN
+}
+
+enum MatchConfidence {
+  VERIFIED
+  HIGH
+  MEDIUM
+  LOW
+}
+
+enum ArtifactStatus {
+  DISCOVERED
+  RESOLUTION_PENDING
+  DOWNLOADABLE
+  DOWNLOADED
+  DOWNLOAD_FAILED
+  VALIDATION_FAILED
+  EXPIRED
+}
+
+enum MediaType {
+  ICON
+  SCREENSHOT
+}
+
+enum InstallJobStatus {
+  QUEUED
+  DOWNLOADING
+  VALIDATING
+  INSTALLING
+  INSTALLED
+  FAILED
+}
+
+enum AppLifecycleStatus {
+  ACTIVE
+  HIDDEN
+  REMOVED
+  SOURCE_CONFLICT
+}
+
+model App {
+  id                     String             @id @default(cuid())
+  packageName            String             @unique
+  canonicalName          String
+  canonicalDeveloper     String?
+  canonicalDescription   String?
+  canonicalCategory      String?
+  canonicalContentRating String?
+  canonicalIconUrl       String?
+  lifecycleStatus        AppLifecycleStatus @default(ACTIVE)
+  createdAt              DateTime           @default(now())
+  updatedAt              DateTime           @updatedAt
+
+  sourceRecords          AppSourceRecord[]
+  versions               AppVersion[]
+  media                  AppMedia[]
+  installJobs            InstallJob[]
+
+  @@index([canonicalName])
+  @@index([canonicalCategory])
+  @@index([lifecycleStatus])
+}
+
+model AppSourceRecord {
+  id              String    @id @default(cuid())
+  appId           String
+  packageName     String
+  source          AppSource
+  sourceEntityId  String?
+  name            String?
+  developer       String?
+  description     String?
+  category        String?
+  rating          Decimal?  @db.Decimal(3, 2)
+  installs        String?
+  contentRating   String?
+  iconUrl         String?
+  rawPayloadJson  Json?
+  fetchedAt       DateTime
+  confidenceScore Decimal?  @db.Decimal(5, 2)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  app             App       @relation(fields: [appId], references: [id], onDelete: Cascade)
+
+  @@unique([packageName, source])
+  @@index([appId])
+  @@index([source])
+  @@index([fetchedAt])
+}
+
+model AppVersion {
+  id            String    @id @default(cuid())
+  appId         String
+  packageName   String
+  versionName   String
+  versionCode   Int?
+  releaseDate   DateTime?
+  minSdk        Int?
+  targetSdk     Int?
+  sourceOfTruth AppSource
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  app           App       @relation(fields: [appId], references: [id], onDelete: Cascade)
+  artifacts     AppArtifact[]
+
+  @@unique([appId, versionName, versionCode])
+  @@index([packageName])
+  @@index([releaseDate])
+  @@index([sourceOfTruth])
+}
+
+model AppArtifact {
+  id                String          @id @default(cuid())
+  appVersionId      String
+  source            ArtifactSource
+  sourceArtifactId  String?
+  artifactType      ArtifactType    @default(APK)
+  pageUrl           String?
+  downloadUrl       String?
+  fileName          String?
+  fileSizeBytes     BigInt?
+  sha256            String?
+  architecture      String?
+  dpi               String?
+  minSdk            Int?
+  isUniversal       Boolean         @default(false)
+  isSplitApk        Boolean         @default(false)
+  matchConfidence   MatchConfidence @default(MEDIUM)
+  status            ArtifactStatus  @default(DISCOVERED)
+  fetchedAt         DateTime
+  lastValidatedAt   DateTime?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  appVersion        AppVersion      @relation(fields: [appVersionId], references: [id], onDelete: Cascade)
+  cachedBinaries    CachedBinary[]
+  installJobs       InstallJob[]
+
+  @@index([appVersionId])
+  @@index([source])
+  @@index([status])
+  @@index([matchConfidence])
+  @@index([fetchedAt])
+  @@unique([appVersionId, source, sourceArtifactId])
+}
+
+model AppMedia {
+  id          String    @id @default(cuid())
+  appId       String
+  packageName String
+  type        MediaType
+  url         String
+  source      AppSource
+  width       Int?
+  height      Int?
+  position    Int?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  app         App       @relation(fields: [appId], references: [id], onDelete: Cascade)
+
+  @@unique([appId, type, url])
+  @@index([packageName])
+  @@index([type])
+  @@index([source])
+}
+
+model CachedBinary {
+  id            String      @id @default(cuid())
+  artifactId    String
+  localPath     String      @unique
+  sha256        String
+  sizeBytes     BigInt
+  downloadedAt  DateTime    @default(now())
+  createdAt     DateTime    @default(now())
+
+  artifact      AppArtifact @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+
+  @@unique([artifactId, sha256])
+  @@index([artifactId])
+}
+
+model InstallJob {
+  id             String           @id @default(cuid())
+  appId          String
+  artifactId     String
+  containerId    String
+  status         InstallJobStatus @default(QUEUED)
+  errorMessage   String?
+  startedAt      DateTime?
+  completedAt    DateTime?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  app            App              @relation(fields: [appId], references: [id], onDelete: Cascade)
+  artifact       AppArtifact      @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+
+  @@index([appId])
+  @@index([artifactId])
+  @@index([containerId])
+  @@index([status])
+}

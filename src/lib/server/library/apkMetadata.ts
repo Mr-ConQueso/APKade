@@ -1,20 +1,5 @@
 import ApkReader from 'adbkit-apkreader';
-
-export type ApkMetadata = {
-    name: string;
-    packageName: string;
-    version: string;
-};
-
-type ManifestApplication = {
-    label?: string | Record<string, string>;
-};
-
-type ManifestInfo = {
-    package?: string;
-    versionName?: string;
-    application?: ManifestApplication;
-};
+import type {ApkMetadata, ManifestInfo} from "$lib/server/library/games";
 
 function sanitizeAppName(value: string) {
     return value.replace(/\s+/g, ' ').trim();

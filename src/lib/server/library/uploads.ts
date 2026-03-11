@@ -1,32 +1,8 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { readApkMetadata } from '$lib/server/apkMetadata';
-
-export type GameRecord = {
-    id: string;
-    name: string;
-    package: string;
-    apk: string;
-    image?: string;
-    uploadedAt: string;
-};
-
-type CreateGameInput = {
-    image?: string;
-    apkFile: File;
-};
-
-type GameMetadata = {
-    id: string;
-    name: string;
-    package: string;
-    version: string;
-    installed: boolean;
-    image?: string;
-    apk: string;
-    uploadedAt: string;
-};
+import {readApkMetadata} from '$lib/server/library/apkMetadata';
+import type {CreateGameInput, GameMetadata, GameRecord} from "$lib/types/game";
 
 const gamesFile = path.resolve('data/games.json');
 const apksRootDir = path.resolve('data/apks');

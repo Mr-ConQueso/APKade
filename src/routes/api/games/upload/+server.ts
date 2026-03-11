@@ -1,5 +1,5 @@
 import { json, type RequestHandler } from '@sveltejs/kit';
-import { createUploadedGame } from '$lib/server/uploads';
+import { createUploadedGame } from '$lib/server/library/uploads';
 
 export const POST: RequestHandler = async ({ request }) => {
 	try {

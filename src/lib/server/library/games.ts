@@ -12,3 +12,19 @@ export function getGame(id: string) {
     const games = getGames();
     return games.find((g: any) => g.id === id);
 }
+
+export type ApkMetadata = {
+    name: string;
+    packageName: string;
+    version: string;
+};
+
+export type ManifestApplication = {
+    label?: string | Record<string, string>;
+};
+
+export type ManifestInfo = {
+    package?: string;
+    versionName?: string;
+    application?: ManifestApplication;
+};
